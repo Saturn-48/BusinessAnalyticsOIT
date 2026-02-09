@@ -79,6 +79,20 @@ def identify_sales_outliers(df: po.DataFrame) -> po.DataFrame:
 
 
 # -----------------------------
+# 6. Label Encoding
+# -----------------------------
+def SetHolidayFlag(df: po.DataFrame):
+    df = df.with_columns(
+        po.when(po.col("Holiday_Flag") == 1)
+        .then(po.lit("Holiday"))
+        .otherwise(po.lit("Non-H"))
+        .alias("Holiday_Flag")
+    )
+
+    return df
+
+
+# -----------------------------
 # 6. Full pipeline
 # -----------------------------
 def clean_sales_data(df: po.DataFrame):
@@ -86,7 +100,7 @@ def clean_sales_data(df: po.DataFrame):
     df = remove_duplicates(df)
     df = enforce_types(df)
     df = standardize_decimals(df)
-
+    df = SetHolidayFlag(df)
     outliers = identify_sales_outliers(df)
 
     return df, outliers
