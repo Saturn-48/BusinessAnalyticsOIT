@@ -4,10 +4,8 @@ import polars as po
 # 1. Null & empty checks
 # -----------------------------
 def remove_nulls_and_empties(df: po.DataFrame) -> po.DataFrame:
-    # Remove null rows (precautionary)
     df = df.drop_nulls()
 
-    # Remove empty strings (Date column only)
     if "Date" in df.columns:
         df = df.filter(po.col("Date").str.len_chars() > 0)
 
@@ -18,13 +16,11 @@ def remove_nulls_and_empties(df: po.DataFrame) -> po.DataFrame:
 # 2. Duplicate detection
 # -----------------------------
 def remove_duplicates(df: po.DataFrame) -> po.DataFrame:
-    # Full-row duplicates
     before = df.height
     df = df.unique()
     after = df.height
 
     print(f"Removed {before - after} duplicate rows")
-
     return df
 
 
@@ -46,7 +42,17 @@ def enforce_types(df: po.DataFrame) -> po.DataFrame:
 
 
 # -----------------------------
-# 4. Decimal standardization
+# 4. Date parsing
+# -----------------------------
+def parse_dates(df: po.DataFrame) -> po.DataFrame:
+    df = df.with_columns(
+        po.col("Date").str.strptime(po.Date, format="%d-%m-%Y")
+    )
+    return df
+
+
+# -----------------------------
+# 5. Decimal standardization
 # -----------------------------
 def standardize_decimals(df: po.DataFrame) -> po.DataFrame:
     df = df.with_columns([
@@ -61,31 +67,13 @@ def standardize_decimals(df: po.DataFrame) -> po.DataFrame:
 
 
 # -----------------------------
-# 5. Outlier identification
+# 6. Holiday flag labeling
 # -----------------------------
-def identify_sales_outliers(df: po.DataFrame) -> po.DataFrame:
-    # IQR method (standard business analytics approach)
-    q1 = df.select(po.col("Weekly_Sales").quantile(0.25)).item()
-    q3 = df.select(po.col("Weekly_Sales").quantile(0.75)).item()
-    iqr = q3 - q1
-
-    upper_bound = q3 + 1.5 * iqr
-
-    outliers = df.filter(po.col("Weekly_Sales") > upper_bound)
-
-    print(f"Identified {outliers.height} high-sales outliers")
-
-    return outliers
-
-
-# -----------------------------
-# 6. Label Encoding
-# -----------------------------
-def SetHolidayFlag(df: po.DataFrame):
+def set_holiday_flag(df: po.DataFrame) -> po.DataFrame:
     df = df.with_columns(
         po.when(po.col("Holiday_Flag") == 1)
         .then(po.lit("Holiday"))
-        .otherwise(po.lit("Non-H"))
+        .otherwise(po.lit("Non-Holiday"))
         .alias("Holiday_Flag")
     )
 
@@ -93,14 +81,32 @@ def SetHolidayFlag(df: po.DataFrame):
 
 
 # -----------------------------
-# 6. Full pipeline
+# 7. Outlier identification (IQR)
+# -----------------------------
+def identify_sales_outliers(df: po.DataFrame) -> po.DataFrame:
+    q1 = df.select(po.col("Weekly_Sales").quantile(0.25)).item()
+    q3 = df.select(po.col("Weekly_Sales").quantile(0.75)).item()
+    iqr = q3 - q1
+
+    upper = q3 + 1.5 * iqr
+
+    outliers = df.filter(po.col("Weekly_Sales") > upper)
+    print(f"Identified {outliers.height} high-sales outliers")
+
+    return outliers
+
+
+# -----------------------------
+# 8. Full pipeline
 # -----------------------------
 def clean_sales_data(df: po.DataFrame):
     df = remove_nulls_and_empties(df)
     df = remove_duplicates(df)
     df = enforce_types(df)
+    df = parse_dates(df)
     df = standardize_decimals(df)
-    df = SetHolidayFlag(df)
+    df = set_holiday_flag(df)
+
     outliers = identify_sales_outliers(df)
 
     return df, outliers
