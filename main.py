@@ -33,7 +33,28 @@ holiday_avg = (
     .to_dicts()
 )
 
-# 3. Top 5 stores by total sales
+# 3. Weekly Holiday
+weekly_holiday_flag = (
+    df_clean
+    .group_by("Date")
+    .agg(
+        po.when(po.col("Holiday_Flag") == "Holiday")
+        .then(po.lit("Holiday Week"))
+        .otherwise(po.lit("Non-Holiday Week"))
+        .max()
+        .alias("Holiday_Week")
+    )
+    .sort("Date")
+    .to_dicts()
+)
+
+holiday_map = {r["Date"]: r["Holiday_Week"] for r in weekly_holiday_flag}
+
+for r in weekly_totals:
+    r["Holiday_Week"] = holiday_map.get(r["Date"], "Non-Holiday Week")
+
+
+# 4. Top 5 stores by total sales
 top_stores = (
     df_clean
     .group_by("Store")
@@ -66,13 +87,18 @@ fig = make_subplots(
     ]
 )
 
-# --- Chart 1: Total weekly sales ---
 fig.add_trace(
     go.Scatter(
         x=[r["Date"] for r in weekly_totals],
         y=[r["Total_Sales"] for r in weekly_totals],
         mode="lines",
-        name="Total Sales"
+        name="Total Sales",
+        customdata=[r["Holiday_Week"] for r in weekly_totals],
+        hovertemplate=(
+            "<b>Date:</b> %{x}<br>"
+            "<b>Total Sales:</b> $%{y:,.0f}<br>"
+            "<b>Week Type:</b> %{customdata}<extra></extra>"
+        )
     ),
     row=1,
     col=1
