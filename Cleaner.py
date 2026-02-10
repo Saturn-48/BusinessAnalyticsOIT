@@ -1,112 +1,69 @@
-import polars as po
+import duckdb as ddb
 
-# -----------------------------
-# 1. Null & empty checks
-# -----------------------------
-def remove_nulls_and_empties(df: po.DataFrame) -> po.DataFrame:
-    df = df.drop_nulls()
-
-    if "Date" in df.columns:
-        df = df.filter(po.col("Date").str.len_chars() > 0)
-
-    return df
+def NewConn():
+    conn = ddb.connect("AmazonSales.duckdb")
+    cursor = conn.cursor()
+    return conn, cursor
 
 
-# -----------------------------
-# 2. Duplicate detection
-# -----------------------------
-def remove_duplicates(df: po.DataFrame) -> po.DataFrame:
-    before = df.height
-    df = df.unique()
-    after = df.height
-
-    print(f"Removed {before - after} duplicate rows")
-    return df
-
-
-# -----------------------------
-# 3. Type enforcement
-# -----------------------------
-def enforce_types(df: po.DataFrame) -> po.DataFrame:
-    df = df.with_columns([
-        po.col("Store").cast(po.Int64),
-        po.col("Weekly_Sales").cast(po.Float64),
-        po.col("Holiday_Flag").cast(po.Int64),
-        po.col("Temperature").cast(po.Float64),
-        po.col("Fuel_Price").cast(po.Float64),
-        po.col("CPI").cast(po.Float64),
-        po.col("Unemployment").cast(po.Float64),
-    ])
-
-    return df
+def CheckSpatial():
+    conn, cursor = NewConn()
+    try:
+        cursor.execute("LOAD Spatial;")
+        print("Spatial Installed. Loading Spatial...")
+        conn.close()
+    except:
+        print("Spatial Not Installed. Installing Spatial...")
+        cursor.execute("INSTALL Spatial;")
+        cursor.execute("LOAD Spatial;")
+        print("Done!")
+        conn.close()
 
 
-# -----------------------------
-# 4. Date parsing
-# -----------------------------
-def parse_dates(df: po.DataFrame) -> po.DataFrame:
-    df = df.with_columns(
-        po.col("Date").str.strptime(po.Date, format="%d-%m-%Y")
-    )
-    return df
+# This generates the db and removes null values
+def CreateDB():
+    conn, cursor = NewConn()
+    CheckSpatial()
+    query = """
+    CREATE TABLE IF NOT EXISTS Sales AS 
+        SELECT Date, 
+        Store, 
+        Weekly_Sales, 
+        IsHoliday, 
+        Year, 
+        Month, 
+        Week,
+        max, 
+        min, 
+        mean, 
+        median, 
+        std, 
+        Total_MarkDown 
+        FROM read_xlsx('amazon_sales_dataset.xlsx', header=TRUE)
+        WHERE Date IS NOT NULL AND 
+            Store IS NOT NULL AND 
+            Weekly_Sales IS NOT NULL AND 
+            IsHoliday IS NOT NULL AND 
+            Year IS NOT NULL AND 
+            Month IS NOT NULL AND 
+            Week IS NOT NULL AND 
+            max IS NOT NULL AND 
+            min IS NOT NULL AND 
+            mean IS NOT NULL AND 
+            median IS NOT NULL AND 
+            std IS NOT NULL AND 
+            Total_MarkDown IS NOT NULL"""
+
+    cursor.execute(query)
+    conn.commit()
+    conn.close()
 
 
-# -----------------------------
-# 5. Decimal standardization
-# -----------------------------
-def standardize_decimals(df: po.DataFrame) -> po.DataFrame:
-    df = df.with_columns([
-        po.col("Weekly_Sales").round(2),
-        po.col("Temperature").round(2),
-        po.col("Fuel_Price").round(3),
-        po.col("CPI").round(3),
-        po.col("Unemployment").round(3),
-    ])
 
-    return df
-
-
-# -----------------------------
-# 6. Holiday flag labeling
-# -----------------------------
-def set_holiday_flag(df: po.DataFrame) -> po.DataFrame:
-    df = df.with_columns(
-        po.when(po.col("Holiday_Flag") == 1)
-        .then(po.lit("Holiday"))
-        .otherwise(po.lit("Non-Holiday"))
-        .alias("Holiday_Flag")
-    )
-
-    return df
-
-
-# -----------------------------
-# 7. Outlier identification (IQR)
-# -----------------------------
-def identify_sales_outliers(df: po.DataFrame) -> po.DataFrame:
-    q1 = df.select(po.col("Weekly_Sales").quantile(0.25)).item()
-    q3 = df.select(po.col("Weekly_Sales").quantile(0.75)).item()
-    iqr = q3 - q1
-
-    upper = q3 + 1.5 * iqr
-
-    outliers = df.filter(po.col("Weekly_Sales") > upper)
-    print(f"Identified {outliers.height} high-sales outliers")
-
-    return outliers
-
-
-# -----------------------------
-# 8. Full pipeline
-# -----------------------------
-def clean_sales_data(df: po.DataFrame):
-    df = remove_nulls_and_empties(df)
-    df = remove_duplicates(df)
-    df = enforce_types(df)
-    df = parse_dates(df)
-    df = standardize_decimals(df)
-    df = set_holiday_flag(df)
-
-    outliers = identify_sales_outliers(df)
-
-    return df, outliers
+# if a holiday is 1, set it to Holiday. If 0, set as Non-Holiday
+def ChangeHoliday():
+    conn, cursor = NewConn()
+    query = """
+    UPDATE Sales 
+    
+    """
