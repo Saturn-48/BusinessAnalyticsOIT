@@ -4,8 +4,8 @@ import plotly as pl
 import Cleaner
 
 Cleaner.CleanAll()
-conn, cursor = Cleaner.NewConn()
 
-df = po.read_database("SELECT * FROM Sales", conn)
+conn, cursor = Cleaner.NewConn()
+df = Cleaner.GetCleanFrame()
 
 print(df)
