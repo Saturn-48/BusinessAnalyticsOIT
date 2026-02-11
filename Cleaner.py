@@ -63,7 +63,38 @@ def CreateDB():
 # if a holiday is 1, set it to Holiday. If 0, set as Non-Holiday
 def ChangeHoliday():
     conn, cursor = NewConn()
+
+    #change the datatype from int to varchar in prep for the conversion
+    alter_query = """ALTER TABLE Sales ALTER COLUMN IsHoliday TYPE VARCHAR(16)"""
+    cursor.execute(alter_query)
+    conn.commit()
+
+
     query = """
     UPDATE Sales 
-    
+    SET IsHoliday = 
+        CASE
+            WHEN 1 THEN 'Holiday'
+            ELSE 'Non-Holiday'
+        END
     """
+
+    cursor.execute(query)
+    conn.commit()
+    results = cursor.fetchall()
+    conn.close()
+    return results
+
+def CleanAll():
+    CreateDB()
+    results = ChangeHoliday()
+    return results
+
+def GetAll():
+    conn, cursor = NewConn()
+    query = "SELECT * FROM Sales"
+
+    cursor.execute(query)
+    results = cursor.fetchall()
+    conn.close()
+    return results
