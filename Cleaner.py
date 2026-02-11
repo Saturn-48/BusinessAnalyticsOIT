@@ -32,7 +32,7 @@ def CreateDB():
         CAST(Date AS DATE) AS Date, 
         CAST(Store AS INT) AS Store, 
         SUM(Weekly_Sales) AS WeeklySales, 
-        MAX(IsHoliday) AS IsHoliday, 
+        CAST(MAX(IsHoliday) AS INT) AS IsHoliday, 
         SUM(Total_MarkDown) AS TotalMarkDown 
         FROM read_xlsx('amazon_sales_dataset.xlsx', header=TRUE)
         WHERE Date IS NOT NULL AND 
@@ -45,6 +45,7 @@ def CreateDB():
     cursor.execute(query)
     conn.commit()
     conn.close()
+    print("DB Created")
 
 
 def CleanDupes():
@@ -62,13 +63,37 @@ def CleanDupes():
     cursor.execute(query)
     results = cursor.fetchall()
     conn.close()
+    print("Removed Duplicates")
     return results
 
 
+def CheckOutliers():
+    conn, cursor = NewConn()
+
+    query = """
+    WITH Bounds AS(
+        SELECT 
+            QUANTILE_CONT(WeeklySales, 0.25) AS Q1,
+            QUANTILE_CONT(WeeklySales, 0.75) AS Q3
+        FROM Sales
+        GROUP BY Store
+    )
+    
+    SELECT * 
+    FROM Sales, Bounds
+    WHERE WeeklySales < (Q1 - 1.5 * (Q3 - Q1))
+    OR WeeklySales > (Q3 + 1.5 * (Q3 - Q1))
+    """
+    cursor.execute(query)
+    results = cursor.fetchall()
+    df = po.read_database(query, conn)
+    print(f"Outliers \n{df}")
+    conn.close()
 
 def CleanAll():
     CreateDB()
     CleanDupes()
+    CheckOutliers()
 
 
 def GetCleanFrame():
