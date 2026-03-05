@@ -1,118 +1,136 @@
 import duckdb as ddb
-import polars as po
-
 
 def NewConn():
     conn = ddb.connect("AmazonSales.duckdb")
-    return conn
+    cursor = conn.cursor()
+    return conn, cursor
 
 
+def CheckSpatial():
+    conn, cursor = NewConn()
+    try:
+        cursor.execute("LOAD Spatial;")
+        print("Spatial Installed. Loading Spatial...")
+        conn.close()
+    except:
+        print("Spatial Not Installed. Installing Spatial...")
+        cursor.execute("INSTALL Spatial;")
+        cursor.execute("LOAD Spatial;")
+        print("Done!")
+        conn.close()
+
+
+# This generates the db and removes null values
 def CreateDB():
-    conn = NewConn()
+    conn, cursor = NewConn()
+    CheckSpatial()
+    query = """
+    CREATE TABLE IF NOT EXISTS Sales AS  
+        SELECT CAST(OrderDate AS DATE) AS OrderDate, 
+            UnitPrice, 
+            Discount, 
+            TotalAmount 
+        FROM read_csv('Amazon.csv', header=TRUE)
+        WHERE OrderDate IS NOT NULL AND 
+            OrderDate IS NOT NULL AND 
+            Discount IS NOT NULL AND 
+            TotalAmount IS NOT NULL"""
+
+    cursor.execute(query)
+    conn.commit()
+    conn.close()
+
+
+
+# if a holiday is 1, set it to Holiday. If 0, set as Non-Holiday
+def ChangeHoliday():
+    conn, cursor = NewConn()
+
+    #change the datatype from int to varchar in prep for the conversion
+    alter_query = "ALTER TABLE Sales ADD COLUMN IF NOT EXISTS IsHoliday INT"
+    cursor.execute(alter_query)
+    conn.commit()
+
+    # change the datatype from int to varchar in prep for the conversion
+    alter_query = "ALTER TABLE Sales ADD COLUMN IF NOT EXISTS HolidayWindow INT"
+    cursor.execute(alter_query)
+    conn.commit()
+
+
+    query = ("UPDATE Sales "
+    "SET IsHoliday = "
+        "CASE "
+            "WHEN " 
+                "(EXTRACT(MONTH FROM OrderDate) = 1  AND EXTRACT(DAY FROM OrderDate) = 1)  OR "
+                "(EXTRACT(MONTH FROM OrderDate) = 2  AND EXTRACT(DAY FROM OrderDate) = 14) OR "
+                "(EXTRACT(MONTH FROM OrderDate) = 7  AND EXTRACT(DAY FROM OrderDate) = 4)  OR "
+                "(EXTRACT(MONTH FROM OrderDate) = 10 AND EXTRACT(DAY FROM OrderDate) = 31) OR "
+                "(EXTRACT(MONTH FROM OrderDate) = 12 AND EXTRACT(DAY FROM OrderDate) = 25) "
+            "THEN 1 "
+            "ELSE 0 "
+        "END")
+
+    cursor.execute(query)
+    conn.commit()
+    results = cursor.fetchall()
+    conn.close()
+    return results
+
+
+
+def GetWeeklyAggregated():
+    conn, cursor = NewConn()
 
     query = """
-    CREATE OR REPLACE TABLE Sales AS 
-    WITH Base AS (
+    WITH weekly AS (
         SELECT 
-            CAST(Date AS DATE) AS Date, 
-            SUM(Weekly_Sales) AS WeeklySales, 
-            CAST(MAX(IsHoliday) AS INT) AS IsHoliday, 
-            SUM(Total_MarkDown) AS TotalMarkDown
-        FROM read_xlsx('amazon_sales_dataset.xlsx', header=TRUE)
-        WHERE Date IS NOT NULL
-          AND Weekly_Sales IS NOT NULL
-          AND IsHoliday IS NOT NULL
-          AND Total_MarkDown IS NOT NULL
-          AND EXTRACT(YEAR FROM Date) > 2019
-        GROUP BY Date
-    )
+            DATE_TRUNC('week', OrderDate) AS WeekStart, 
+            MAX(IsHoliday) AS IsHoliday,  -- if any day is holiday, week = holiday 
+            SUM(TotalAmount) AS WeeklyRevenue 
+        FROM Sales 
+        GROUP BY 1 
+    ),
 
-    SELECT *,
+    holiday_weeks AS ( 
+        SELECT WeekStart 
+        FROM weekly 
+        WHERE IsHoliday = 1 
+    ) 
+
+    SELECT  
+        w.WeekStart, 
+        w.IsHoliday, 
+        w.WeeklyRevenue, 
         CASE 
-            WHEN IsHoliday = 1 THEN 1
-            WHEN LEAD(IsHoliday, 1) OVER (ORDER BY Date) = 1 THEN 1
-            WHEN LEAD(IsHoliday, 2) OVER (ORDER BY Date) = 1 THEN 1
-            ELSE 0
-        END AS HolidayWindow
-    FROM Base
-    ORDER BY Date;
+            WHEN w.IsHoliday = 1 THEN 1 
+            WHEN w.WeekStart IN ( 
+                SELECT WeekStart - INTERVAL '1 week' FROM holiday_weeks 
+            ) THEN 1 
+            WHEN w.WeekStart IN ( 
+                SELECT WeekStart - INTERVAL '2 week' FROM holiday_weeks 
+            ) THEN 1 
+            ELSE 0 
+        END AS HolidayWindow 
+    FROM weekly w 
+    ORDER BY w.WeekStart 
     """
 
-    conn.execute(query)
-    conn.close()
-    print("Database Created / Rebuilt")
-
-
-# ---------------- DATA FOR PLOTS ----------------
-
-def GetCleanFrame():
-    conn = NewConn()
-
-    query = """
-    SELECT *,
-        CASE
-            WHEN HolidayWindow = 1 THEN 'HolidayWeek'
-            ELSE 'Non-HolidayWeek'
-        END AS HolidayType
-    FROM Sales
-    ORDER BY Date
-    """
-
-    df = po.read_database(query, conn)
+    df = cursor.execute(query).fetchdf()
     conn.close()
     return df
 
 
-# ---------------- OVERALL SUMMARY STATS ----------------
+def CleanAll():
+    CreateDB()
+    return ChangeHoliday()
 
-def GetOverallStats():
-    conn = NewConn()
 
-    query = """
-    SELECT
-        AVG(WeeklySales) AS MeanSales,
-        MEDIAN(WeeklySales) AS MedianSales,
-        STDDEV(WeeklySales) AS StdSales,
-        MIN(WeeklySales) AS MinSales,
-        MAX(WeeklySales) AS MaxSales
-    FROM Sales
-    """
+def GetAll():
+    CleanAll()
+    conn, cursor = NewConn()
+    query = "SELECT * FROM Sales"
 
-    df = po.read_database(query, conn)
+    cursor.execute(query)
+    results = cursor.fetchdf()
     conn.close()
-    return df
-
-
-# ---------------- HOLIDAY VS NON-HOLIDAY STATS ----------------
-
-def GetHolidayStats():
-    conn = NewConn()
-
-    query = """
-    SELECT
-        HolidayWindow,
-        AVG(WeeklySales) AS MeanSales,
-        MEDIAN(WeeklySales) AS MedianSales,
-        STDDEV(WeeklySales) AS StdSales,
-        MIN(WeeklySales) AS MinSales,
-        MAX(WeeklySales) AS MaxSales
-    FROM Sales
-    GROUP BY HolidayWindow
-    """
-
-    df = po.read_database(query, conn)
-    conn.close()
-    return df
-
-
-def GetCorrelation():
-    conn = NewConn()
-
-    query = """
-    SELECT corr(WeeklySales, TotalMarkDown) AS Sales_Markdown_Correlation
-    FROM Sales
-    """
-
-    df = po.read_database(query, conn)
-    conn.close()
-    return df
+    return results
