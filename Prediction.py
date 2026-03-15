@@ -1,88 +1,172 @@
+from statsmodels.tsa.statespace.sarimax import SARIMAX
 import pandas as pd
-from statsmodels.tsa.holtwinters import ExponentialSmoothing
 import plotly.graph_objects as go
 
 
-def RunForecast(weekly_df):
-    df = weekly_df.copy().sort_values("WeekStart")
+# --------------------------------------------------
+# Generate future holiday flags
+# --------------------------------------------------
+def GenerateFutureCalendar(last_date, steps):
 
-    model = ExponentialSmoothing(
-        df["WeeklyRevenue"],
-        trend="add",
-        seasonal="add",
-        seasonal_periods=52
-    )
-
-    fit = model.fit()
-    forecast = fit.forecast(104)
-
-    forecast_dates = pd.date_range(
-        start=df["WeekStart"].iloc[-1],
-        periods=104,
+    future_dates = pd.date_range(
+        start=last_date + pd.Timedelta(weeks=1),
+        periods=steps,
         freq="W"
     )
 
+    holidays = [(1, 1), (2, 14), (7, 4), (11, 25), (12, 25)]
+
+    is_holiday = []
+
+    for d in future_dates:
+        flag = 0
+        for m, day in holidays:
+            h = pd.Timestamp(year=d.year, month=m, day=day)
+            if d <= h <= d + pd.Timedelta(days=6):
+                flag = 1
+
+        is_holiday.append(flag)
+
+    df = pd.DataFrame({
+        "WeekStart": future_dates,
+        "IsHoliday": is_holiday
+    })
+    df["HolidayWindow"] = 0
+
+    return df
+
+
+# --------------------------------------------------
+# Apply post-holiday discount removal
+# --------------------------------------------------
+def ApplyPostHolidayDiscountRule(df, avg_discount):
+
+    df = df.copy()
+
+    df["AvgDiscount"] = avg_discount
+
+    last_holiday = None
+
+    for i in range(len(df)):
+
+        if df.iloc[i]["IsHoliday"] == 1:
+            last_holiday = i
+
+        if last_holiday is not None:
+
+            weeks_after = i - last_holiday
+
+            if 1 <= weeks_after <= 2:
+                df.at[df.index[i], "AvgDiscount"] = 0
+
+    return df
+
+
+# --------------------------------------------------
+# Run Forecast
+# --------------------------------------------------
+def RunForecast(weekly_df):
+
+    df = weekly_df.copy().sort_values("WeekStart")
+
+    # Force numeric
+    df["WeeklyRevenue"] = pd.to_numeric(df["WeeklyRevenue"])
+    df["AvgDiscount"] = pd.to_numeric(df["AvgDiscount"])
+    df["IsHoliday"] = pd.to_numeric(df["IsHoliday"])
+    df["HolidayWindow"] = pd.to_numeric(df["HolidayWindow"])
+
+    df = df.dropna()
+
+    y = df["WeeklyRevenue"]
+
+    exog = df[["AvgDiscount", "IsHoliday", "HolidayWindow"]]
+
+    # -----------------------------
+    # SARIMAX MODEL
+    # -----------------------------
+    model = SARIMAX(
+        y,
+        exog=exog,
+        order=(1, 1, 1),
+        seasonal_order=(1, 1, 1, 52),
+        enforce_stationarity=False,
+        enforce_invertibility=False
+    )
+
+    fit = model.fit(disp=False)
+
+    # -----------------------------
+    # FUTURE DATA
+    # -----------------------------
+    steps = 104
+
+    future_calendar = GenerateFutureCalendar(df["WeekStart"].iloc[-1], steps)
+
+    avg_discount = df["AvgDiscount"].mean()
+
+    # Baseline
+    future_base = future_calendar.copy()
+    future_base["AvgDiscount"] = avg_discount
+
+    forecast_base = fit.forecast(
+        steps=steps,
+        exog=future_base[["AvgDiscount", "IsHoliday", "HolidayWindow"]]
+    )
+
+    # No post-holiday discounts
+    future_no_discount = ApplyPostHolidayDiscountRule(
+        future_calendar,
+        avg_discount
+    )
+
+    forecast_no_discount = fit.forecast(
+        steps=steps,
+        exog=future_no_discount[["AvgDiscount", "IsHoliday", "HolidayWindow"]]
+    )
+
+    # Convert to dataframe
     forecast_df = pd.DataFrame({
-        "WeekStart": forecast_dates,
-        "ForecastRevenue": forecast
+        "WeekStart": future_calendar["WeekStart"],
+        "ForecastBaseline": forecast_base.values,
+        "ForecastNoPostHolidayDiscount": forecast_no_discount.values
     })
 
     return forecast_df
 
 
+# --------------------------------------------------
+# Plot Forecast
+# --------------------------------------------------
 def PlotForecast(history_df, forecast_df):
-    """
-    Plots historical and forecast revenue with enhanced hover data.
-    AvgDiscount, IsHoliday, and HolidayWindow are carried forward for forecast.
-    """
+
     fig = go.Figure()
 
-    # Historical Revenue
-    fig.add_trace(
-        go.Scatter(
-            x=history_df["WeekStart"],
-            y=history_df["WeeklyRevenue"],
-            name="Historical Revenue",
-            mode="lines",
-            hovertemplate=
-                "<b>Week Start:</b> %{x|%Y-%m-%d}<br>" +
-                "<b>Week End:</b> %{customdata[0]|%Y-%m-%d}<br>" +
-                "<b>Revenue:</b> $%{y:,.2f}<br>" +
-                "<b>Avg Discount:</b> %{customdata[1]:.2%}<br>" +
-                "<b>Holiday:</b> %{customdata[2]}<br>" +
-                "<b>Holiday Window:</b> %{customdata[3]}<extra></extra>",
-            customdata=history_df[["WeekEnd", "AvgDiscount", "IsHoliday", "HolidayWindow"]].values
-        )
-    )
+    # Historical
+    fig.add_trace(go.Scatter(
+        x=history_df["WeekStart"],
+        y=history_df["WeeklyRevenue"],
+        mode="lines",
+        name="Historical Revenue"
+    ))
 
-    # Carry forward last known values for forecast hover
-    last_row = history_df.iloc[-1]
-    forecast_df = forecast_df.copy()
-    forecast_df["WeekEnd"] = forecast_df["WeekStart"] + pd.Timedelta(days=6)
-    forecast_df["AvgDiscount"] = last_row["AvgDiscount"]
-    forecast_df["IsHoliday"] = 0
-    forecast_df["HolidayWindow"] = 0
+    # Baseline forecast
+    fig.add_trace(go.Scatter(
+        x=forecast_df["WeekStart"],
+        y=forecast_df["ForecastBaseline"],
+        mode="lines",
+        name="Forecast Baseline"
+    ))
 
-    # Forecast Revenue
-    fig.add_trace(
-        go.Scatter(
-            x=forecast_df["WeekStart"],
-            y=forecast_df["ForecastRevenue"],
-            name="Forecast Revenue",
-            mode="lines",
-            hovertemplate=
-                "<b>Week Start:</b> %{x|%Y-%m-%d}<br>" +
-                "<b>Week End:</b> %{customdata[0]|%Y-%m-%d}<br>" +
-                "<b>Forecast Revenue:</b> $%{y:,.2f}<br>" +
-                "<b>Avg Discount:</b> %{customdata[1]:.2%}<br>" +
-                "<b>Holiday:</b> %{customdata[2]}<br>" +
-                "<b>Holiday Window:</b> %{customdata[3]}<extra></extra>",
-            customdata=forecast_df[["WeekEnd", "AvgDiscount", "IsHoliday", "HolidayWindow"]].values
-        )
-    )
+    # No post holiday discount
+    fig.add_trace(go.Scatter(
+        x=forecast_df["WeekStart"],
+        y=forecast_df["ForecastNoPostHolidayDiscount"],
+        mode="lines",
+        name="No Post-Holiday Discount"
+    ))
 
     fig.update_layout(
-        title="Revenue Forecast (Holt-Winters)",
+        title="Revenue Forecast Comparison",
         xaxis_title="Week",
         yaxis_title="Revenue",
         hovermode="x unified"
